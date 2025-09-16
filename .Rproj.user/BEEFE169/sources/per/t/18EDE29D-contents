@@ -1,0 +1,98 @@
+# this file analyses intracranial hemorrhage
+
+rm(list=ls())
+# set up the data -----
+library(rio)
+d30=import("data_ELAN_30_90_days.xlsx", sheet="30days")
+
+
+
+# analysis flat prior, 30 days ---------
+
+plots.RD=list()
+outcomes=d30$Outcome
+outcomes2=c("composite outcome", "major extracranial bleeding", "symptomatic intracranial hemorrhage", "recurrent ischemic stroke", 
+            "systemic embolism", "vascular death")
+
+  outcome = 3
+  print(outcomes[outcome])
+  d1=d30[d30$Outcome==outcomes[outcome],]  
+
+  
+  library(rjags)
+  model.1="
+model {
+events.early~dbin(p.early,total.early)
+events.late~dbin(p.late,total.late)
+p.late<-RD+p.early
+p.early~dunif(0,1)
+RD~dunif(-1,1)}
+"
+  
+  modelJAGS1<-textConnection(model.1) 
+  data <- list(events.early=d1$events.early, 
+               total.early=d1$total.early, 
+               events.late=d1$events.late, 
+               total.late=d1$total.late)
+  n.chains=4
+  jags.1<- jags.model(modelJAGS1, data = data, n.chains =n.chains, n.adapt = 500)
+    params <- c("RD")
+  closeAllConnections()
+  samps.1<- coda.samples(jags.1, params, n.iter =10000)
+    library(MCMCvis)
+  #round(MCMCsummary(samps.1)*100,2)
+  #MCMCtrace(samps.1,pdf = FALSE, params = "RD") 
+    ### create a plot for the posterior
+  all.samps.1=samps.1[[1]]
+  for(i in 2:n.chains){ all.samps.1=rbind(all.samps.1, samps.1[[i]])}
+  all.samps.1=data.frame(RD=all.samps.1[,1])
+  mean(all.samps.1$RD*100>-0.5)
+  
+  
+  
+  
+  
+  ## sceptic prior-------
+  test= (rnorm(10000,-0.01,1/sqrt(30000))) #    test=rnorm(10000,-0.01,1/sqrt(10000)) 
+  round(quantile(test, probs = c(0.025, 0.5, 0.975)),3)
+  round(quantile(test, probs = c(0.01, 0.5, 0.99)),3)
+  mean(test>0)
+  
+  model.1="
+model {
+events.early~dbin(p.early,total.early)
+events.late~dbin(p.late,total.late)
+p.late<-RD+p.early
+p.early~dunif(0,1)
+RD~  dnorm(-0.01,30000) # dnorm(-0.01,10000)
+RD1~ dnorm(-0.01,30000) # dnorm(-0.01,10000)
+}
+"
+modelJAGS1<-textConnection(model.1) 
+data <- list(events.early=d1$events.early, 
+             total.early=d1$total.early, 
+             events.late=d1$events.late, 
+             total.late=d1$total.late)
+n.chains=4
+jags.1<- jags.model(modelJAGS1, data = data, n.chains =n.chains, n.adapt = 500)
+
+params <- c("RD", "RD1")
+closeAllConnections()
+samps.1<- coda.samples(jags.1, params, n.iter =10000)
+
+library(MCMCvis)
+#round(MCMCsummary(samps.1)*100,2)
+#MCMCtrace(samps.1,pdf = FALSE, params = "RD") 
+
+# posterior
+all.samps.1=samps.1[[1]]
+for(i in 2:n.chains){ all.samps.1=rbind(all.samps.1, samps.1[[i]])}
+all.samps.1=data.frame(RD=all.samps.1[,1], prior=all.samps.1[,2])
+
+mean(all.samps.1$prior)
+mean(all.samps.1$RD)
+
+mean(all.samps.1$RD>-0.005)
+mean(all.samps.1$RD>0)
+mean(all.samps.1$prior>0)
+

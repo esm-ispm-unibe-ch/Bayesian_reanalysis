@@ -1,0 +1,257 @@
+# this file analyses the composite and separate outcomes at 30 and 90 days
+
+rm(list=ls())
+# set up the data -----
+library(rio)
+d30=import("data_ELAN_30_90_days.xlsx", sheet="30days")
+d90=import("data_ELAN_30_90_days.xlsx", sheet="90days")
+
+
+# functions for calculating RD frequentist ----
+calculate_risk_difference <- function(event1, n1, event2, n2, digits) {
+  # Calculate proportions
+  p1 <- event1 / n1
+  p2 <- event2 / n2
+  # Risk difference
+  rd <- p2 - p1
+  # Standard error of risk difference
+  se_rd <- sqrt((p1 * (1 - p1) / n1) + (p2 * (1 - p2) / n2))
+  # Return results
+  list(
+    risk_difference = paste0(round(rd*100,digits), "%"),
+    standard_error = paste0(round(se_rd*100,digits), "%"),
+    confidence_interval = round(c(rd - 1.96 * se_rd, rd + 1.96 * se_rd)*100,digits)
+  )
+}
+
+calculate_odds_ratio <- function(event1, n1, event2, n2) {
+  # Calculate odds in each group
+  odds1 <- event1 / (n1 - event1)
+  odds2 <- event2 / (n2 - event2)
+  # Odds ratio
+  or <- odds2 / odds1
+  # Standard error of log odds ratio
+  se_log_or <- sqrt(1/event1 + 1/(n1 - event1) + 1/event2 + 1/(n2 - event2))
+  
+  # 95% confidence interval
+  log_or <- log(or)
+  ci_lower <- exp(log_or - 1.96 * se_log_or)
+  ci_upper <- exp(log_or + 1.96 * se_log_or)
+  
+  # Return results
+  list(
+    odds_ratio = or,
+    conf_int = c(ci_lower, ci_upper),
+    log_odds_ratio = log_or,
+    se_log_or = se_log_or
+  )
+}
+
+
+
+
+# analysis per outcome, at 30 days ---------
+
+plots.RD=list()
+outcomes=d30$Outcome
+outcomes2=c("composite outcome", "major extracranial bleeding", "symptomatic intracranial hemorrhage", "recurrent ischemic stroke", 
+            "systemic embolism", "vascular death")
+
+for(outcome in 1:length(d30$Outcome)){
+  # outcome = 2
+  print(outcomes[outcome])
+  d1=d30[d30$Outcome==outcomes[outcome],]  
+    rd30=calculate_risk_difference(d1$events.early, d1$total.early, 
+                                d1$events.late, d1$total.late, 1)
+
+
+  library(rjags)
+  model.1="
+model {
+events.early~dbin(p.early,total.early)
+events.late~dbin(p.late,total.late)
+p.late<-RD+p.early
+p.early~dunif(0,1)
+RD~dunif(-1,1)}
+"
+  
+  modelJAGS1<-textConnection(model.1) 
+  data <- list(events.early=d1$events.early, 
+               total.early=d1$total.early, 
+               events.late=d1$events.late, 
+               total.late=d1$total.late)
+  n.chains=4
+  jags.1<- jags.model(modelJAGS1, data = data, n.chains =n.chains, n.adapt = 500)
+  
+  params <- c("RD")
+  closeAllConnections()
+  samps.1<- coda.samples(jags.1, params, n.iter =10000)
+  
+  library(MCMCvis)
+  #round(MCMCsummary(samps.1)*100,2)
+  #MCMCtrace(samps.1,pdf = FALSE, params = "RD") 
+  
+  
+  ### create a plot for the posterior
+  all.samps.1=samps.1[[1]]
+  for(i in 2:n.chains){ all.samps.1=rbind(all.samps.1, samps.1[[i]])}
+  all.samps.1=data.frame(RD=all.samps.1[,1])
+  
+  library(dplyr)
+  library(ggplot2)
+  cutoff=0.
+  hist.y <- density(all.samps.1$RD, 
+                    from = -0.05, to = 0.05) %$% 
+    data.frame(x = x, y = y) %>% 
+    mutate(area = x >= cutoff)
+  
+  prob.pos=round(mean(all.samps.1$RD>cutoff)*100)
+  prob.neg=100-prob.pos
+  
+  
+  hist.y$area2="Early better"
+  hist.y$area2[hist.y$area==F]="Late better"
+  
+  plots.RD[[outcome]] <- ggplot(data = hist.y, aes(x = x, ymin = 0, ymax = y, fill = area2)) +
+    geom_ribbon() +
+    geom_line(aes(y = y)) +
+    geom_vline(xintercept = cutoff, color = 'red',linetype = "longdash") +
+    annotate(geom = 'text', x = 0.01, y = 10, color = 'Black', label = paste0(prob.pos,"%"), hjust = -0.1)+
+    annotate(geom = 'text', x = -0.02, y = 10, color = 'Black', label = paste0(prob.neg,"%"), hjust = -0.1)+
+    labs(fill = "")+
+    labs(y= "Posterior probability density", x = "Risk difference (%) late vs early")+
+    labs(title = paste0("Reduction of ",outcomes2[outcome]), subtitle=paste0("RD=", rd30$risk_difference, " [" ,
+                                                                                    rd30$confidence_interval[1],"%, ",
+                                                                                    rd30$confidence_interval[2],"%]"))+
+    theme(
+      plot.title = element_text(color="black", size=14, face="bold",hjust = 0.5),
+      axis.title.x = element_text(color="black", size=12, face="bold"),
+      axis.title.y = element_text(color="black", size=12, face="bold"),
+      plot.subtitle = element_text(color="black", size=16,hjust = 0.5))+
+    scale_x_continuous(labels = scales::percent) +
+    scale_fill_manual(values = c("Early better" = "firebrick1", "Late better" = "limegreen"))+
+    ylim(c(0,ifelse(outcome==1|outcome==4|outcome==6, 100, 200)))+
+#    geom_label(aes(x = 0.03, y = ifelse(outcome==1, 140, 60), 
+#                   label = "→ Early better"),
+#               color = "black",       # Text color
+#               fill = NA,             # Transparent background
+#               label.size = 0,        # No border
+#               size = 4)  +
+#    geom_label(aes(x = -0.03, y = ifelse(outcome==1, 140, 60), 
+#                   label = "Late better ←"),
+#               color = "black",       # Text color
+#               fill = NA,             # Transparent background
+#               label.size = 0,        # No border
+#               size = 4)+
+    theme(legend.position = "none")
+  
+  
+}
+
+library(gridExtra)
+results_30d=grid.arrange(plots.RD[[1]], plots.RD[[2]], plots.RD[[3]], plots.RD[[4]], 
+             plots.RD[[5]], plots.RD[[6]],nrow=2)
+
+
+
+# analysis per outcome, at 90 days ---------
+
+plots.RD=list()
+outcomes=d90$Outcome
+outcomes2=c("composite outcome", "major extracranial bleeding", "symptomatic intracranial hemorrhage", "recurrent ischemic stroke", 
+            "systemic embolism", "vascular death")
+
+for(outcome in 1:length(d90$Outcome)){
+  # outcome = 2
+  print(outcomes[outcome])
+  d1=d90[d90$Outcome==outcomes[outcome],]  
+  rd90=calculate_risk_difference(d1$events.early, d1$total.early, 
+                                 d1$events.late, d1$total.late, 1)
+  
+  
+  library(rjags)
+  model.1="
+model {
+events.early~dbin(p.early,total.early)
+events.late~dbin(p.late,total.late)
+p.late<-RD+p.early
+p.early~dunif(0,1)
+RD~dunif(-1,1)}
+"
+  
+  modelJAGS1<-textConnection(model.1) 
+  data <- list(events.early=d1$events.early, 
+               total.early=d1$total.early, 
+               events.late=d1$events.late, 
+               total.late=d1$total.late)
+  n.chains=4
+  jags.1<- jags.model(modelJAGS1, data = data, n.chains =n.chains, n.adapt = 500)
+  
+  params <- c("RD")
+  closeAllConnections()
+  samps.1<- coda.samples(jags.1, params, n.iter =10000)
+  
+  library(MCMCvis)
+  #round(MCMCsummary(samps.1)*100,2)
+  #MCMCtrace(samps.1,pdf = FALSE, params = "RD") 
+  
+  
+  ### create a plot for the posterior
+  all.samps.1=samps.1[[1]]
+  for(i in 2:n.chains){ all.samps.1=rbind(all.samps.1, samps.1[[i]])}
+  all.samps.1=data.frame(RD=all.samps.1[,1])
+  
+  library(dplyr)
+  library(ggplot2)
+  cutoff=0.
+  hist.y <- density(all.samps.1$RD, 
+                    from = -0.05, to = 0.05) %$% 
+    data.frame(x = x, y = y) %>% 
+    mutate(area = x >= cutoff)
+  
+  prob.pos=round(mean(all.samps.1$RD>cutoff)*100)
+  prob.neg=100-prob.pos
+  
+  
+  hist.y$area2="Early better"
+  hist.y$area2[hist.y$area==F]="Late better"
+  
+  plots.RD[[outcome]] <- ggplot(data = hist.y, aes(x = x, ymin = 0, ymax = y, fill = area2)) +
+    geom_ribbon() +
+    geom_line(aes(y = y)) +
+    geom_vline(xintercept = cutoff, color = 'red',linetype = "longdash") +
+    annotate(geom = 'text', x = 0.01, y = 10, color = 'Black', label = paste0(prob.pos,"%"), hjust = -0.1)+
+    annotate(geom = 'text', x = -0.02, y = 10, color = 'Black', label = paste0(prob.neg,"%"), hjust = -0.1)+
+    labs(fill = "")+
+    labs(y= "Posterior probability density", x = "Risk difference (%) late vs early")+
+    labs(title = paste0("Reduction of ",outcomes2[outcome]), subtitle=paste0("RD=", rd90$risk_difference, " [" ,
+                                                                             rd90$confidence_interval[1],"%, ",
+                                                                             rd90$confidence_interval[2],"%]"))+
+    theme(
+      plot.title = element_text(color="black", size=14, face="bold",hjust = 0.5),
+      axis.title.x = element_text(color="black", size=12, face="bold"),
+      axis.title.y = element_text(color="black", size=12, face="bold"),
+      plot.subtitle = element_text(color="black", size=16,hjust = 0.5))+
+    scale_x_continuous(labels = scales::percent) +
+    scale_fill_manual(values = c("Early better" = "firebrick1", "Late better" = "limegreen"))+
+    ylim(c(0,ifelse(outcome==1|outcome==4|outcome==6, 80, 200)))+
+    #    geom_label(aes(x = 0.03, y = ifelse(outcome==1, 140, 60), 
+    #                   label = "→ Early better"),
+    #               color = "black",       # Text color
+    #               fill = NA,             # Transparent background
+    #               label.size = 0,        # No border
+    #               size = 4)  +
+    #    geom_label(aes(x = -0.03, y = ifelse(outcome==1, 140, 60), 
+    #                   label = "Late better ←"),
+    #               color = "black",       # Text color
+    #               fill = NA,             # Transparent background
+    #               label.size = 0,        # No border
+    #               size = 4)+
+    theme(legend.position = "none")
+  
+  
+}
+
+library(gridExtra)
+results_90d=grid.arrange(plots.RD[[1]], plots.RD[[2]], plots.RD[[3]], plots.RD[[4]], 
+                         plots.RD[[5]], plots.RD[[6]],nrow=2)

@@ -1,0 +1,74 @@
+library(rjags)
+
+# ------------------------
+# Data
+# ------------------------
+counts <- matrix(
+  c(1,1, 13, 969,
+    0, 2, 25, 964),
+  nrow = 2, byrow = TRUE
+)
+row.names(counts)=c("early", "late")
+colnames(counts)=c("both", "only.hem", "only.stroke", "none")
+totals= rowSums(counts)
+data=data.frame(cbind(counts, totals))
+treats=2
+
+# Dirichlet prior parameters (non-informative)
+alpha <- rep(1, 4)
+
+data_list <- list(
+  counts = counts,
+  n = totals,
+  treats = 2,
+  K = 4,
+  alpha = alpha
+)
+
+# ------------------------
+# JAGS model
+# ------------------------
+model_string <- "
+model {
+  for (i in 1:treats) {
+    counts[i, 1:K] ~ dmulti(p[i, 1:K], n[i])
+    p[i, 1:K] ~ ddirch(alpha[1:K])
+  }
+}
+"
+
+# ------------------------
+# Run JAGS
+# ------------------------
+n.chains=4
+jags_model <- jags.model(
+  textConnection(model_string),
+  data = data_list,
+  n.chains = n.chains,
+  quiet = TRUE
+)
+
+update(jags_model, 1000) # burn-in
+
+samples <- coda.samples(
+  model = jags_model,
+  variable.names = c("p"),
+  n.iter = 15000
+)
+
+
+library(MCMCvis)
+results=round(MCMCsummary(samples)*100,2)
+data/data$totals*100
+
+
+all.samps.1=samples[[1]]
+for(i in 2:n.chains){ all.samps.1=rbind(all.samps.1, samples[[i]])}
+all.samps.2=data.frame(all.samps.1)
+head(all.samps.2)
+summary(all.samps.2*100)
+
+all.samps.2$H_early=with(all.samps.2, 2*p.1.1. + p.1.2. +p.1.3.)
+all.samps.2$H_late=with(all.samps.2, 2*p.2.1. +p.2.2. +p.2.3.)
+
+mean(all.samps.2$H_late>all.samps.2$H_early)
